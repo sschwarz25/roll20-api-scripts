@@ -41,19 +41,17 @@ Token Control - A Roll20 Script to move tokens along scripted paths at a variabl
     - Hides the Commands in the Chat Menu
 
 # Upcomging Features:
-*   Path Builder
+*   Path Builder -- Version(+.0.0)
     - Allows the GM to create paths with tokens and menu buttons
-*   Path Auto-Facing
-    - Automatically faces the token along the path, toggled on/off per path
-*   Path Layer Swapping
+*   Path Layer Swapping -- Version(N.+.0)
     - "Hide" and "Show" tokens at various points of the path
-*   Cleaner Pathing
+*   Cleaner Pathing -- Version(N.M.+)
     - Break long segments into smaller steps
-*   Token Linking
+*   Token Linking -- Version(N.+.0)
     - Link multiple tokens movement to a head token
 
 # Known Defects:
-*   Add Path - Vector Parse Error
+*
 */
 
 var API_Meta = API_Meta || {};
@@ -62,7 +60,7 @@ API_Meta.TokenController = { offset: Number.MAX_SAFE_INTEGER, lineCount: -1 };
 
 const TokenController = (() => {
     const NAME = 'TokenController';
-    const VERSION = '1.0.6';
+    const VERSION = '1.1.0';
     const AUTHOR = 'Scott E. Schwarz';
 
     const __RESET__ = false;
