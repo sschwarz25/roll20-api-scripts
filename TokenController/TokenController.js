@@ -25,7 +25,7 @@ API_Meta.TokenController = { offset: Number.MAX_SAFE_INTEGER, lineCount: -1 };
 
 const TokenController = (() => {
     const NAME = 'TokenController';
-    const VERSION = '2.1.0'; // Builder, Reversals, and so much more
+    const VERSION = '2.1.1'; // Builder, Reversals, and so much more
     const AUTHOR = 'Scott E. Schwarz';
 
     const __RESET__ = false;
@@ -66,13 +66,16 @@ const TokenController = (() => {
                     state[NAME].storedVariables.patrolArea = [];
                 }
                 if (state[NAME].storedVariables.interval == undefined) {
-                    state[NAME].storedVariables.interval = 2000;
+                    state[NAME].storedVariables.interval = 5000;
                 }
                 if (state[NAME].storedVariables.hideCommands == undefined) {
                     state[NAME].storedVariables.hideCommands = true;
                 }
                 if (state[NAME].storedVariables.unitPerClick == undefined) {
-                    state[NAME].storedVariables.unitPerClick = 1;
+                    state[NAME].storedVariables.unitPerClick = 2;
+                }
+                if (state[NAME].storedVariables.pageMetas == undefined) {
+                    state[NAME].storedVariables.pageMetas = [];
                 }
             }
         }
@@ -136,9 +139,19 @@ const TokenController = (() => {
                     /*{
                         name: "Test",
                         pageId: "",
+                        radius: 0, // Grid Units
                     },*/
                 ],
-                interval: 2000,
+                pageMetas: [
+                    /*{
+                        pageId: "",
+                        pageName: "",
+                        pageWidth: 0, // Grid Units * pageScaleNumber
+                        pageHeight: 0, // Grid Units * pageScaleNumber
+                        pageScaleNumber: 0 // in {scale_units}
+                    }*/
+                ],
+                interval: 5000,
                 hideCommands: true,
                 unitPerClick: 1
             };
@@ -320,7 +333,7 @@ const TokenController = (() => {
                 continue;
             }
 
-            let tokenPath = state[NAME].storedVariables.activeTokenPaths[i];
+            const tokenPath = state[NAME].storedVariables.activeTokenPaths[i];
             if (!tokenPath) {
                 log(`${NAME}: Error: Token path not found.`);
                 state[NAME].storedVariables.activeTokenPaths.splice(i, 1);
@@ -328,7 +341,7 @@ const TokenController = (() => {
                 continue;
             }
 
-            let pathIndex = state[NAME].storedVariables.paths.findIndex(p => p.name == tokenPath.pathName);
+            const pathIndex = state[NAME].storedVariables.paths.findIndex(p => p.name == tokenPath.pathName);
             if (pathIndex == -1) {
                 log(`${NAME}: Error: Path ${tokenPath.pathName} not found.`);
                 state[NAME].storedVariables.activeTokenPaths.splice(i, 1);
@@ -336,8 +349,7 @@ const TokenController = (() => {
                 continue;
             }
 
-            let pathCode = state[NAME].storedVariables.paths[pathIndex].path;
-            let step = tokenPath.step;
+            const pathCode = state[NAME].storedVariables.paths[pathIndex].path;
 
             const pathArray = pathCode.match(/([UDLR])([0-9])|W/g);
             if (!pathArray || pathArray.length < 1) {
@@ -347,8 +359,7 @@ const TokenController = (() => {
                 continue;
             }
 
-            let pathVector = pathArray[step];
-
+            const pathVector = pathArray[tokenPath.step];
             if (!pathVector) {
                 log(`${NAME}: Error: Path code ${pathCode} is invalid - No Vectors present.`);
                 state[NAME].storedVariables.activeTokenPaths.splice(i, 1);
@@ -356,9 +367,9 @@ const TokenController = (() => {
                 continue;
             }
 
-            let direction = pathVector.substring(0, 1);
+            const direction = pathVector.substring(0, 1);
 
-            let distance = parseInt(pathVector.substring(1));
+            const distance = parseInt(pathVector.substring(1));
             if (isNaN(distance) && direction != "W") {
                 log(`${NAME}: Error: Path code ${pathCode} is invalid - distance not a number.`);
                 state[NAME].storedVariables.activeTokenPaths.splice(i, 1);
@@ -366,7 +377,11 @@ const TokenController = (() => {
                 continue;
             }
 
-            moveToken(tokenPath.tokenId, direction, distance);
+            if (!moveToken(tokenPath.tokenId, direction, distance, tokenPath.pageId)) {
+                state[NAME].storedVariables.activeTokenPaths.splice(i, 1);
+                i--;
+                continue;
+            }
 
             if (tokenPath.isReversing) {
                 if (tokenPath.step == 0) {
@@ -377,7 +392,7 @@ const TokenController = (() => {
                 }
             } else {
                 if (tokenPath.step == pathArray.length - 1) {
-                    if (state[NAME].storedVariables.activeTokenPaths[i].isCycle) {
+                    if (state[NAME].storedVariables.paths[pathIndex].isCycle) {
                         state[NAME].storedVariables.activeTokenPaths[i].step = 0;
                     } else {
                         state[NAME].storedVariables.activeTokenPaths[i].isReversing = true;
@@ -390,7 +405,7 @@ const TokenController = (() => {
         }
     }
 
-    function moveToken(tokenId, direction, distance) {
+    function moveToken(tokenId, direction, distance, pageId) {
         let angle = 0;
         switch (direction.toUpperCase()) {
             case "U":
@@ -406,33 +421,47 @@ const TokenController = (() => {
                 angle = 270;
                 break;
             case "W":
-                return;
+                return true;
             default:
-                log(`${NAME}: Error: Path code ${pathCode} is invalid - Invalid direction.`);
-                return;
+                sendChat(`${NAME}`, `/w GM Error: Path code ${pathCode} is invalid - Invalid direction.`);
+                return false;
         }
 
         let token = getObj("graphic", tokenId);
         if (!token) {
-            log(`${NAME}: Error: Token ${tokenId} not found.`);
-            return;
+            sendChat(`${NAME}`, `/w GM Error: Token ${tokenId} not found.`);
+            return false;
         }
 
         if (distance == 0) {
             token.set("rotation", angle);
-            return;
+            return true;
         }
 
-        token.set(angle === 0 || angle === 180
-            ? {
-                "top": token.get("top") + (distance * 70 * (angle === 0 ? 1 : -1)),
-                "rotation": angle
+        const pageMeta = state[NAME].storedVariables.pageMetas.find(p => p.pageId == pageId);
+        if (!pageMeta) {
+            sendChat(`${NAME}`, `/w GM Error: Page ${pageId} not found. Please restart the path.`);
+            return false;
+        }
+
+        if (angle === 0 || angle === 180) {
+            const top = token.get("top") + (distance * 70 * (angle === 0 ? 1 : -1));
+            if ((top + 70) > pageMeta.pageHeight || top < 0) {
+                sendChat(`${NAME}`, `/w GM Error: Token ${tokenId} is out of bounds. Top: ${top + 70} (+70) > ${pageMeta.pageHeight}`);
+                return true;
             }
-            : {
-                "left": token.get("left") + (distance * 70 * (angle === 90 ? -1 : 1)),
-                "rotation": angle
+            token.set({ "top": top, "rotation": angle });
+
+        } else {
+            const left = token.get("left") + (distance * 70 * (angle === 90 ? -1 : 1));
+            if ((left + 70) > pageMeta.pageWidth || left < 0) {
+                sendChat(`${NAME}`, `/w GM Error: Token ${tokenId} is out of bounds. Left: ${left + 70} (+70) > ${pageMeta.pageWidth}`);
+                return true;
             }
-        );
+            token.set({ "left": left, "rotation": angle });
+        }
+
+        return true;
     }
 
     function setupMacros() {
@@ -711,7 +740,8 @@ const TokenController = (() => {
         // Add path to path list
         state[NAME].storedVariables.paths.push({
             name: name,
-            path: state[NAME].storedVariables.pathDrafts[draftIndex].path
+            path: state[NAME].storedVariables.pathDrafts[draftIndex].path,
+            isCycle: testCycle(state[NAME].storedVariables.pathDrafts[draftIndex].path),
         });
 
         // Remove draft
@@ -878,13 +908,90 @@ const TokenController = (() => {
 
         selected.forEach(function (selected) {
             const token = getObj('graphic', selected._id);
+            if (!token) {
+                sendChat(`${NAME}`, "/w GM Please select a token to start a path.");
+                return;
+            }
+
+            const tokenLeft = token.get('left');
+            if (tokenLeft == undefined) {
+                sendChat(`${NAME}`, "/w GM Unable to retrieve Token Left.");
+                return;
+            }
+
+            const tokenTop = token.get('top');
+            if (tokenTop == undefined) {
+                sendChat(`${NAME}`, "/w GM Unable to retrieve Token Top.");
+                return;
+            }
+
+            const pageId = token.get('_pageid');
+            if (pageId == undefined) {
+                sendChat(`${NAME}`, "/w GM Unable to retrieve Page ID from Token.");
+                return;
+            }
+
+            const page = getObj('page', pageId);
+            if (!page) {
+                sendChat(`${NAME}`, "/w GM Unable to retrieve Page.");
+                return;
+            }
+
+            const pageName = page.get('name');
+            if (pageName == undefined) {
+                sendChat(`${NAME}`, "/w GM Unable to retrieve Page Name.");
+                return;
+            }
+
+            const pageWidth = page.get('width');
+            if (pageWidth == undefined) {
+                sendChat(`${NAME}`, "/w GM Unable to retrieve Page Width.");
+                return;
+            }
+
+            const pageHeight = page.get('height');
+            if (pageHeight == undefined) {
+                sendChat(`${NAME}`, "/w GM Unable to retrieve Page Height.");
+                return;
+            }
+
+            const pageScale = page.get('scale_number');
+            if (pageScale == undefined) {
+                sendChat(`${NAME}`, "/w GM Unable to retrieve Page Scale.");
+                return;
+            }
+
+            if (state[NAME].storedVariables.pageMetas === undefined) {
+                state[NAME].storedVariables.pageMetas = [];
+            }
+
+            if (state[NAME].storedVariables.activeTokenPaths === undefined) {
+                state[NAME].storedVariables.activeTokenPaths = [];
+            }
+
+            const pageMetaIndex = state[NAME].storedVariables.pageMetas.findIndex(pageMeta => pageMeta.pageId === pageId);
+            if (pageMetaIndex === -1) {
+                state[NAME].storedVariables.pageMetas.push({
+                    pageId: pageId,
+                    pageName: pageName,
+                    pageWidth: pageWidth * 70,
+                    pageHeight: pageHeight * 70,
+                    pageScaleNumber: pageScale
+                });
+            } else if (state[NAME].storedVariables.pageMetas[pageMetaIndex].pageScaleNumber === undefined) {
+                state[NAME].storedVariables.pageMetas[pageMetaIndex].pageWidth = pageWidth * 70;
+                state[NAME].storedVariables.pageMetas[pageMetaIndex].pageHeight = pageHeight * 70;
+                state[NAME].storedVariables.pageMetas[pageMetaIndex].pageScaleNumber = pageScale;
+            }
+
             state[NAME].storedVariables.activeTokenPaths.push({
                 tokenId: selected._id,
                 pathName: pathName,
                 step: 0,
-                initialLeft: token.get('left'),
-                initialTop: token.get('top'),
+                initialLeft: tokenLeft,
+                initialTop: tokenTop,
                 isReversing: false,
+                pageId: pageId,
             });
         });
 
@@ -962,7 +1069,7 @@ const TokenController = (() => {
             if (index == -1) {
                 state[NAME].storedVariables.tokenMemory.push({
                     tokenId: selected._id,
-                    pageId: token.get('pageid'),
+                    pageId: token.get('_pageid'),
                     rotation: token.get('rotation'),
                     left: token.get('left'),
                     top: token.get('top'),
@@ -1026,7 +1133,7 @@ const TokenController = (() => {
         if (followerIndex == -1) {
             state[NAME].storedVariables.tokenMemory.push({
                 tokenId: followerId,
-                pageId: followerToken.get('pageid'),
+                pageId: followerToken.get('_pageid'),
                 rotation: followerToken.get('rotation'),
                 left: /* Initial Left Difference of Follower and Leader */ followerToken.get('left') - leaderToken.get('left'),
                 top: /* Initial Top Difference of Follower and Leader */ followerToken.get('top') - leaderToken.get('top'),
@@ -1155,9 +1262,9 @@ const TokenController = (() => {
 
                 let row = table.append('tr', undefined, { title: path.name });
                 row.append('td', `[${path.name}](!tc List Draft ${path.name})`);
+                row.append('td', `[\`\`L\`\`](!tc draft ${path.name} L ${state[NAME].storedVariables.unitPerClick})`);
                 row.append('td', `[\`\`U\`\`](!tc draft ${path.name} U ${state[NAME].storedVariables.unitPerClick})`);
                 row.append('td', `[\`\`D\`\`](!tc draft ${path.name} D ${state[NAME].storedVariables.unitPerClick})`);
-                row.append('td', `[\`\`L\`\`](!tc draft ${path.name} L ${state[NAME].storedVariables.unitPerClick})`);
                 row.append('td', `[\`\`R\`\`](!tc draft ${path.name} R ${state[NAME].storedVariables.unitPerClick})`);
                 row.append('td', `[\`\`W\`\`](!tc draft ${path.name} W)`);
                 row.append('td', `[\`\`Set\`\`](!tc draft ${path.name} Set)`);
@@ -1204,8 +1311,11 @@ const TokenController = (() => {
 
             for (let i = 0; i < state[NAME].storedVariables.tokenMemory.length; i++) {
                 const token = state[NAME].storedVariables.tokenMemory[i];
+                const obj = getObj('graphic', token.tokenId);
+                if (!obj) continue;
+
                 row = table.append('tr');
-                row.append('td', `${getObj('graphic', token.tokenId).get('name')}`);
+                row.append('td', `${obj.get('name')}`);
                 row.append('td', `${token.tokenId}`);
                 row.append('td', `${token.pageId}`);
                 row.append('td', `${token.rotation}`);
