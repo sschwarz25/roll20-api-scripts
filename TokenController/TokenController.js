@@ -5,50 +5,15 @@ Token Control - A Roll20 Script to move tokens along scripted paths at a variabl
 # General Commands
 *   !token-control
     - Displays the help text
-*   !token-control Setup
-    - Sets up the GM Macros for the script
-*   !token-control List [Paths [pathName] | Tokens [pathName]]
-    - List Paths and Tokens actively following them
-
-# Path Commands
-*   !token-control Add <path_name> <path_code>
-    - Adds a new path to the list of paths
-*   !token-control Set <path_name> <path_code>
-    - Sets the path code for a path
-*   !token-control Remove <path_name>
-    - Removes a path from the list of paths
-
-# Token Commands
-*   !token-control Start <path_name>
-    - Starts a path with a selected token, moving every second
-*   !token-control Stop [path_name]
-    - Stops all paths with a selected token [or all tokens on a path]
-*   !token-control Lock
-    - Locks all selected tokens at their current position
-    - Moves the token to the "locked" position every tick
-*   !token-control Unlock
-    - Unlocks all selected tokens
-*   !token-control Follow
-    - Sets the selected token to follow the targeted token
-
-# Config Commands
-*   !token-control Tick <interval>
-    - Sets the interval for the script to run at in milliseconds
-    * If interval is less than 100, the script will assume seconds and convert to milliseconds
-*   !token-control Reset
-    - Resets the script to the default values
-*   !token-control Hide
-    - Hides the Commands in the Chat Menu
+    - Honestly, just use the menu, it got crazy
 
 # Upcomging Features:
-*   Path Builder -- Version(+.0.0)
-    - Allows the GM to create paths with tokens and menu buttons
 *   Path Layer Swapping -- Version(N.+.0)
     - "Hide" and "Show" tokens at various points of the path
 *   Cleaner Pathing -- Version(N.M.+)
     - Break long segments into smaller steps
-*   Token Linking -- Version(N.+.0)
-    - Link multiple tokens movement to a head token
+*   Area Patrol -- Version (+.0.0)
+*   Detect Light Walls (only doing with grid matrix math, no linear)
 
 # Known Defects:
 *
@@ -60,7 +25,7 @@ API_Meta.TokenController = { offset: Number.MAX_SAFE_INTEGER, lineCount: -1 };
 
 const TokenController = (() => {
     const NAME = 'TokenController';
-    const VERSION = '1.1.0';
+    const VERSION = '2.1.0'; // Builder, Reversals, and so much more
     const AUTHOR = 'Scott E. Schwarz';
 
     const __RESET__ = false;
@@ -94,11 +59,20 @@ const TokenController = (() => {
                 if (state[NAME].storedVariables.tokenMemory == undefined) {
                     state[NAME].storedVariables.tokenMemory = [];
                 }
+                if (state[NAME].storedVariables.pathDrafts == undefined) {
+                    state[NAME].storedVariables.pathDrafts = [];
+                }
+                if (state[NAME].storedVariables.patrolArea == undefined) {
+                    state[NAME].storedVariables.patrolArea = [];
+                }
                 if (state[NAME].storedVariables.interval == undefined) {
                     state[NAME].storedVariables.interval = 2000;
                 }
                 if (state[NAME].storedVariables.hideCommands == undefined) {
                     state[NAME].storedVariables.hideCommands = true;
+                }
+                if (state[NAME].storedVariables.unitPerClick == undefined) {
+                    state[NAME].storedVariables.unitPerClick = 1;
                 }
             }
         }
@@ -108,19 +82,23 @@ const TokenController = (() => {
                 paths: [
                     {
                         name: "Square",
-                        path: "U2R2D2L2"
+                        path: "U2R2D2L2",
+                        isCycle: true,
                     }, {
                         name: "Rectangle",
-                        path: "U1R2D1L2"
+                        path: "U1R2D1L2",
+                        isCycle: true,
                     }, {
                         name: "T",
-                        path: "U3U0WWR2R0WWL4WWR2D3WW"
+                        path: "U3U0WWR2R0WWL4WWR2D3WW",
+                        isCycle: true,
                     }],
                 activeTokenPaths: [
                     /*{
                         tokenId: "Test",
                         pathName: "Square",
                         step: 0,
+                        isReversing: false,
 
                         initialLeft: 0,
                         initialTop: 0,
@@ -138,8 +116,31 @@ const TokenController = (() => {
                         isLocked: false,
                     },*/
                 ],
+                pathDrafts: [
+                    /*{
+                        name: "Test",
+                        path: "U2R2D2L2",
+                        tokenId: "",
+                        step: 0,
+                        currentStep: { // Since the last vector is L, if U,D,R is pressed next, progress steps and concat this to setPath, else distance++
+                            direction: "",
+                            distance: 0,
+                        },
+                        previousStep: {
+                            direction: "",
+                            distance: 0,
+                        },
+                    },*/
+                ],
+                patrolArea: [
+                    /*{
+                        name: "Test",
+                        pageId: "",
+                    },*/
+                ],
                 interval: 2000,
-                hideCommands: true
+                hideCommands: true,
+                unitPerClick: 1
             };
         }
 
@@ -164,6 +165,7 @@ const TokenController = (() => {
     on("chat:message", function (msg) {
         try {
             if (msg.type === "api" && msg.content.toLowerCase().startsWith("!token-control") || msg.content.toLowerCase().startsWith("!tc")) {
+
                 if (!playerIsGM(msg.playerid)) {
                     sendChat(`${NAME}`, "/w " + msg.who + " You do not have permission to use this command.");
                     return;
@@ -200,11 +202,14 @@ const TokenController = (() => {
                             case "vars":
                                 listVars();
                                 break;
+                            case "draft":
+                                listDrafts(args.length > 3 ? args[3] : undefined);
+                                break;
                         }
                         break;
 
                     // Path Commands
-                    case "add": // FIXME: Something is breaking
+                    case "add":
                         addPath(args[2], args[3]);
                         break;
                     case "set":
@@ -212,6 +217,28 @@ const TokenController = (() => {
                         break;
                     case "remove":
                         removePath(args[2]);
+                        break;
+                    case "build":
+                        if (args.length !== 4) {
+                            sendChat(`${NAME}`, "/w " + msg.who + " Invalid number of arguments.  Usage: !tc build <pathName> <tokenId>");
+                            return;
+                        }
+                        buildPath(args[2], args[3]);
+                        break;
+                    case "draft":
+                        if (args.length < 4) {
+                            sendChat(`${NAME}`, "/w " + msg.who + " Invalid number of arguments.  Usage: !tc draft <pathName> <tokenId>");
+                            return;
+                        }
+                        draftPath(args[2], args[3], args.length > 4 ? args[4] : undefined);
+                        break;
+                    case "unit":
+                        if (args.length < 3) {
+                            sendChat(`${NAME}`, "/w " + msg.who + " Invalid number of arguments.  Usage: !tc unit <unitPerClick>");
+                            return;
+                        }
+                        state[NAME].storedVariables.unitPerClick = parseInt(args[2]);
+                        createMenu();
                         break;
 
                     // Token Commands
@@ -232,7 +259,11 @@ const TokenController = (() => {
                         unlockTokens(msg.selected);
                         break;
                     case "follow":
-                        followTokens(msg.selected);
+                        if (args.length < 4) {
+                            sendChat(`${NAME}`, "/w " + msg.who + " Invalid number of arguments.  Usage: !tc follow <tokenId> <tokenId>");
+                            return;
+                        }
+                        followTokens(args[2], args[3]);
                         break;
 
                     // Config Commands
@@ -253,7 +284,7 @@ const TokenController = (() => {
         }
     });
 
-    function pathTokens() { // Locked > Following > Pathing
+    function pathTokens() {
         let blockIds = [];
 
         if (state[NAME].storedVariables.tokenMemory.length > 0) {
@@ -268,15 +299,21 @@ const TokenController = (() => {
                             "rotation": token.rotation
                         });
                     }
-                }
 
-                if (token.isFollowing) {
+                } else if (token.isFollowing) {
                     blockIds.push(token.tokenId);
-                    // TODO: Token Follow Logic
+                    let follower = getObj("graphic", token.tokenId);
+                    let leader = getObj("graphic", token.followingTokenId);
+                    if (follower && leader) {
+                        follower.set({
+                            "left": leader.get("left") + token.left,
+                            "top": leader.get("top") + token.top,
+                            "rotation": leader.get("rotation")
+                        });
+                    }
                 }
             });
         }
-
 
         for (let i = 0; i < state[NAME].storedVariables.activeTokenPaths.length; i++) {
             if (blockIds.includes(state[NAME].storedVariables.activeTokenPaths[i].tokenId)) {
@@ -291,26 +328,17 @@ const TokenController = (() => {
                 continue;
             }
 
-            let path = state[NAME].storedVariables.paths.find(p => p.name == tokenPath.pathName);
-            if (!path) {
+            let pathIndex = state[NAME].storedVariables.paths.findIndex(p => p.name == tokenPath.pathName);
+            if (pathIndex == -1) {
                 log(`${NAME}: Error: Path ${tokenPath.pathName} not found.`);
                 state[NAME].storedVariables.activeTokenPaths.splice(i, 1);
                 i--;
                 continue;
             }
 
-            let pathCode = path.path;
+            let pathCode = state[NAME].storedVariables.paths[pathIndex].path;
             let step = tokenPath.step;
 
-            let token = getObj("graphic", tokenPath.tokenId);
-            if (!token) {
-                log(`${NAME}: Error: Token ${tokenPath.tokenId} not found.`);
-                state[NAME].storedVariables.activeTokenPaths.splice(i, 1);
-                i--;
-                continue;
-            }
-
-            // RegEx Match Groups of the form (U|D|L|R)(1-9) or each (W)
             const pathArray = pathCode.match(/([UDLR])([0-9])|W/g);
             if (!pathArray || pathArray.length < 1) {
                 log(`${NAME}: Error: Path code ${pathCode} is invalid - No Vector Matches.`);
@@ -320,6 +348,7 @@ const TokenController = (() => {
             }
 
             let pathVector = pathArray[step];
+
             if (!pathVector) {
                 log(`${NAME}: Error: Path code ${pathCode} is invalid - No Vectors present.`);
                 state[NAME].storedVariables.activeTokenPaths.splice(i, 1);
@@ -328,80 +357,140 @@ const TokenController = (() => {
             }
 
             let direction = pathVector.substring(0, 1);
-            let angle = 0; // Angles are inverted
-            switch (direction.toUpperCase()) {
-                case "U":
-                    angle = 180;
-                    break;
-                case "D":
-                    angle = 0;
-                    break;
-                case "L":
-                    angle = 90;
-                    break;
-                case "R":
-                    angle = 270;
-                    break;
-                case "W":
-                    state[NAME].storedVariables.activeTokenPaths[i].step == pathArray.length - 1
-                        ? state[NAME].storedVariables.activeTokenPaths[i].step = 0
-                        : state[NAME].storedVariables.activeTokenPaths[i].step++;
-                    continue;
-                default:
-                    log(`${NAME}: Error: Path code ${pathCode} is invalid - Invalid direction.`);
-                    state[NAME].storedVariables.activeTokenPaths.splice(i, 1);
-                    i--;
-                    continue;
-            }
 
             let distance = parseInt(pathVector.substring(1));
-            if (isNaN(distance)) {
+            if (isNaN(distance) && direction != "W") {
                 log(`${NAME}: Error: Path code ${pathCode} is invalid - distance not a number.`);
                 state[NAME].storedVariables.activeTokenPaths.splice(i, 1);
                 i--;
                 continue;
             }
 
-            if (distance == 0) {
-                token.set("rotation", angle);
-                state[NAME].storedVariables.activeTokenPaths[i].step == pathArray.length - 1
-                    ? state[NAME].storedVariables.activeTokenPaths[i].step = 0
-                    : state[NAME].storedVariables.activeTokenPaths[i].step++;
-                continue;
+            moveToken(tokenPath.tokenId, direction, distance);
+
+            if (tokenPath.isReversing) {
+                if (tokenPath.step == 0) {
+                    state[NAME].storedVariables.activeTokenPaths[i].isReversing = false;
+                    state[NAME].storedVariables.activeTokenPaths[i].step++;
+                } else {
+                    state[NAME].storedVariables.activeTokenPaths[i].step--;
+                }
+            } else {
+                if (tokenPath.step == pathArray.length - 1) {
+                    if (state[NAME].storedVariables.activeTokenPaths[i].isCycle) {
+                        state[NAME].storedVariables.activeTokenPaths[i].step = 0;
+                    } else {
+                        state[NAME].storedVariables.activeTokenPaths[i].isReversing = true;
+                        state[NAME].storedVariables.activeTokenPaths[i].step--;
+                    }
+                } else {
+                    state[NAME].storedVariables.activeTokenPaths[i].step++;
+                }
             }
-
-            token.set(angle === 0 || angle === 180
-                ? {
-                    "top": token.get("top") + (distance * 70 * (angle === 0 ? 1 : -1)),
-                    "rotation": angle
-                }
-                : {
-                    "left": token.get("left") + (distance * 70 * (angle === 90 ? -1 : 1)),
-                    "rotation": angle
-                }
-            );
-
-            state[NAME].storedVariables.activeTokenPaths[i].step == pathArray.length - 1
-                ? state[NAME].storedVariables.activeTokenPaths[i].step = 0
-                : state[NAME].storedVariables.activeTokenPaths[i].step++;
         }
     }
 
+    function moveToken(tokenId, direction, distance) {
+        let angle = 0;
+        switch (direction.toUpperCase()) {
+            case "U":
+                angle = 180;
+                break;
+            case "D":
+                angle = 0;
+                break;
+            case "L":
+                angle = 90;
+                break;
+            case "R":
+                angle = 270;
+                break;
+            case "W":
+                return;
+            default:
+                log(`${NAME}: Error: Path code ${pathCode} is invalid - Invalid direction.`);
+                return;
+        }
+
+        let token = getObj("graphic", tokenId);
+        if (!token) {
+            log(`${NAME}: Error: Token ${tokenId} not found.`);
+            return;
+        }
+
+        if (distance == 0) {
+            token.set("rotation", angle);
+            return;
+        }
+
+        token.set(angle === 0 || angle === 180
+            ? {
+                "top": token.get("top") + (distance * 70 * (angle === 0 ? 1 : -1)),
+                "rotation": angle
+            }
+            : {
+                "left": token.get("left") + (distance * 70 * (angle === 90 ? -1 : 1)),
+                "rotation": angle
+            }
+        );
+    }
+
     function setupMacros() {
-        let menuMacro = getObj('macro', 'TokenController_Menu');
-        if (!menuMacro) {
-            const players = findObjs({ _type: 'player' });
-            _.each(players, function (player) {
-                const playerId = player.get('_id');
-                if (playerIsGM(playerId)) {
-                    createObj('macro', {
-                        name: 'TokenController_Menu',
-                        action: '!token-control',
-                        playerid: playerId,
-                        visibleto: playerId,
-                    });
-                }
+        let oldMenuMacro = findObjs({ type: 'macro', name: 'TokenController_Menu' });
+        if (oldMenuMacro.length > 0) {
+            oldMenuMacro[0].remove();
+        }
+
+        let menuMacro = findObjs({ type: 'macro', name: 'T-Cntrl_Menu' });
+
+        const gmPlayers = findObjs({ _type: 'player' }).filter(player => playerIsGM(player.get("_id")));
+
+        if (!menuMacro || menuMacro.length < 1) {
+            _.each(gmPlayers, function (player) {
+                createObj('macro', {
+                    name: 'T-Cntrl_Menu',
+                    action: '!token-control',
+                    playerid: player.get("_id"),
+                });
             });
+        } else if (menuMacro.length > 1) {
+            for (let i = 1; i < menuMacro.length; i++) {
+                menuMacro[i].remove();
+            }
+        }
+
+        let buildPathMacro = findObjs({ type: 'macro', name: 'T-Cntrl_Builder' });
+        if (!buildPathMacro || buildPathMacro.length < 1) {
+            _.each(gmPlayers, function (player) {
+                createObj('macro', {
+                    name: 'T-Cntrl_Builder',
+                    action: '!tc Build @{selected|token_id} ?{Name of Path?}',
+                    playerid: player.get("_id"),
+                    visibleto: player.get("_id"),
+                    istokenaction: true
+                });
+            });
+        } else if (buildPathMacro.length > 1) {
+            for (let i = 1; i < buildPathMacro.length; i++) {
+                buildPathMacro[i].remove();
+            }
+        }
+
+        let followMacro = findObjs({ type: 'macro', name: 'T-Cntrl_Follow' });
+        if (!followMacro || followMacro.length < 1) {
+            _.each(gmPlayers, function (player) {
+                createObj('macro', {
+                    name: 'T-Cntrl_Follow',
+                    action: '!tc Follow @{selected|token_id} @{target|token_id}',
+                    playerid: player.get("_id"),
+                    visibleto: player.get("_id"),
+                    istokenaction: true
+                });
+            });
+        } else if (followMacro.length > 1) {
+            for (let i = 1; i < followMacro.length; i++) {
+                followMacro[i].remove();
+            }
         }
     }
 
@@ -421,7 +510,12 @@ const TokenController = (() => {
             return;
         }
 
-        state[NAME].storedVariables.paths.push({ name: name, path: pathString });
+        state[NAME].storedVariables.paths.push({
+            name: name,
+            path: pathString,
+            isCycle: testCycle(pathString)
+        });
+        createMenu();
         sendChat(`${NAME}`, `/w GM Path "${name}" added.`);
     }
 
@@ -436,30 +530,207 @@ const TokenController = (() => {
             return;
         }
 
-        state[NAME].storedVariables.paths[index].path = { name: name, path: pathString };
+        state[NAME].storedVariables.paths[index].path = {
+            name: name,
+            path: pathString,
+            isCycle: testCycle(pathString)
+        };
+        createMenu();
         sendChat(`${NAME}`, `/w GM Path "${name}" updated to ${pathString}.`);
     }
 
+    function testCycle(pathString) {
+        let workingString = pathString.replace("W", "");
+        let pathArray = workingString.match(/([UDLR])(\d+)/g);
+
+        let vert = 0;
+        let horz = 0;
+
+        for (let i = 0; i < pathArray.length; i++) {
+            let direction = pathArray[i][0];
+            let distance = parseInt(pathArray[i].substr(1));
+
+            if (direction === "U") {
+                vert += distance;
+            } else if (direction === "D") {
+                vert -= distance;
+            } else if (direction === "L") {
+                horz -= distance;
+            } else if (direction === "R") {
+                horz += distance;
+            }
+        }
+
+        return vert === 0 && horz === 0;
+    }
+
     function removePath(name) {
-        const index = getPathIndexByName(name);
+        let index = getPathIndexByName(name);
         if (index == -1) {
+            // Try to find and remove from pathDrafts
+            index = state[NAME].storedVariables.pathDrafts.findIndex(p => p.name == name);
+            if (index > -1) {
+                state[NAME].storedVariables.pathDrafts.splice(index, 1);
+                sendChat(`${NAME}`, `/w GM Path "${name}" removed from Drafts.`);
+            } else {
+                sendChat(`${NAME}`, `/w GM Path "${name}" not found in Drafts.`);
+            }
+
             return;
         }
 
         state[NAME].storedVariables.paths.splice(index, 1);
+        createMenu();
         sendChat(`${NAME}`, `/w GM Path "${name}" removed.`);
     }
 
-    function getPathIndexByName(name) {
+    function buildPath(tokenId, name) {
         if (!name) {
             sendChat(`${NAME}`, "/w GM Please specify a name for the path.");
             return;
         }
 
+        if (!tokenId) {
+            sendChat(`${NAME}`, "/w GM Please specify a tokenId for the path.");
+            return;
+        }
+
+        // Check for name in pathDraft list and path list
+        if (state[NAME].storedVariables.pathDrafts.find(p => p.name == name) || state[NAME].storedVariables.paths.find(p => p.name == name)) {
+            sendChat(`${NAME}`, "/w GM Path name already exists.");
+            return;
+        }
+
+        // Create pathDraft
+        const pathDraft = {
+            name: name,
+            path: "",
+            tokenId: tokenId,
+            step: 0,
+            currentStep: {
+                direction: "",
+                distance: undefined,
+            },
+            previousStep: {
+                direction: "",
+                distance: undefined,
+            },
+        };
+
+        state[NAME].storedVariables.pathDrafts.push(pathDraft);
+        createMenu();
+        sendChat(`${NAME}`, `/w GM Path "${name}" added to Drafts.`);
+    }
+
+    function draftPath(name, direction, distance) {
+        if (!name) {
+            sendChat(`${NAME}`, "/w GM Please specify a name for the path.");
+            return;
+        }
+
+        if (!direction) {
+            sendChat(`${NAME}`, "/w GM Please specify a direction for the path.");
+            return;
+        }
+
+        // Short Circuits for Set and Remove
+        if (direction == "Set") {
+            setDraftToPath(name);
+            createMenu();
+            return;
+        } else if (direction == "Remove") {
+            state[NAME].storedVariables.pathDrafts.splice(state[NAME].storedVariables.pathDrafts.findIndex(p => p.name == name), 1);
+            createMenu();
+            return;
+        }
+
+        // Check for valid direction
+        if (!/[UDLRW]/.test(direction)) {
+            sendChat(`${NAME}`, `/w GM Invalid direction {${direction}}.`);
+            return;
+        }
+
+        // Validate distance
+        if (!!distance) {
+            if (direction == "W") {
+                sendChat(`${NAME}`, `/w GM "W" means "Wait", and should not have distance input.`);
+
+            } else if (!/\d+/.test(distance)) {
+                sendChat(`${NAME}`, "/w GM Please specify a valid distance.");
+                return;
+            }
+        }
+
+        // Get draft by name in pathDrafts
+        const draftIndex = state[NAME].storedVariables.pathDrafts.findIndex(p => p.name == name);
+        if (draftIndex < 0) {
+            sendChat(`${NAME}`, "/w GM Path draft not found.");
+            return;
+        }
+
+        // Validate Draft
+        if (state[NAME].storedVariables.pathDrafts[draftIndex].path == undefined || state[NAME].storedVariables.pathDrafts[draftIndex].tokenId == undefined) {
+            sendChat(`${NAME}`, "/w GM Path draft improperly started, removing draft. Please try again.");
+            state[NAME].storedVariables.pathDrafts.splice(draftIndex, 1);
+            return;
+        }
+
+        state[NAME].storedVariables.pathDrafts[draftIndex].path += direction == "W" ? "W" : `${direction}${distance}`;
+        state[NAME].storedVariables.pathDrafts[draftIndex].step++;
+
+        // Move Token for Visual Verification
+        moveToken(state[NAME].storedVariables.pathDrafts[draftIndex].tokenId, direction, distance);
+
+        // Update Step
+        state[NAME].storedVariables.pathDrafts[draftIndex].step++;
+
+        createMenu();
+    }
+
+    function setDraftToPath(name) {
+        if (!name) {
+            sendChat(`${NAME}`, "/w GM Please specify a name for the path.");
+            return;
+        }
+
+        // Get draft by name in pathDrafts
+        const draftIndex = state[NAME].storedVariables.pathDrafts.findIndex(p => p.name == name);
+        if (draftIndex < 0) {
+            sendChat(`${NAME}`, "/w GM Path draft not found.");
+            return;
+        }
+
+        // Validate Draft
+        // TODO: Round up all of these into one function
+        if (state[NAME].storedVariables.pathDrafts[draftIndex].path == undefined || state[NAME].storedVariables.pathDrafts[draftIndex].tokenId == undefined) {
+            sendChat(`${NAME}`, "/w GM Path draft improperly started, removing draft. Please try again.");
+            state[NAME].storedVariables.pathDrafts.splice(draftIndex, 1);
+            return;
+        }
+
+        // Add path to path list
+        state[NAME].storedVariables.paths.push({
+            name: name,
+            path: state[NAME].storedVariables.pathDrafts[draftIndex].path
+        });
+
+        // Remove draft
+        state[NAME].storedVariables.pathDrafts.splice(draftIndex, 1);
+
+        createMenu();
+        sendChat(`${NAME}`, `/w GM Path "${name}" added to Paths and removed from Drafts.`);
+    }
+
+    function getPathIndexByName(name) {
+        if (!name) {
+            sendChat(`${NAME}`, "/w GM Please specify a name for the path.");
+            return -1;
+        }
+
         const index = state[NAME].storedVariables.paths.findIndex(path => path.name == name);
         if (index == -1) {
-            sendChat(`${NAME}`, `/w GM Path "${name}" not found.`);
-            return;
+            sendChat(`${NAME}`, `/w GM Path "${name}" not found in Paths.`);
+            return -1;
         }
 
         return index;
@@ -516,9 +787,9 @@ const TokenController = (() => {
                 return;
             }
 
-            sendChat(`${NAME}`, `/w GM Path "${name}" is defined as "${paths[index].path}". Current Tokens on Path:<br/> ${getTokensOnPath(name)}`);
+            sendChat(`${NAME}`, `/w GM Path "${name}" is defined as "${paths[index].path}" (Cycle: ${paths[index].isCycle}). Current Tokens on Path:<br/> ${getTokensOnPath(name)}`);
         } else {
-            sendChat(`${NAME}`, `/w GM Paths:<br/><table>${paths.map(path => `<tr><td style="margin-left: 5px">${path.name}</td><td>${path.path}</td></tr>`).join("")}</table>`);
+            sendChat(`${NAME}`, `/w GM Paths:<br/><table>${paths.map(path => `<tr><td style="margin-left: 5px">${path.name}</td><td>${path.path}</td><td>${path.isCycle}</td></tr>`).join("")}</table>`);
         }
     }
 
@@ -545,13 +816,37 @@ const TokenController = (() => {
         createMenu();
     }
 
+    function listDrafts(name) {
+        if (name != undefined && name != "") {
+            const draftIndex = state[NAME].storedVariables.pathDrafts.findIndex(draft => draft.name == name);
+
+            if (draftIndex > -1) {
+                if (state[NAME].storedVariables.pathDrafts[draftIndex].tokenId == undefined || state[NAME].storedVariables.pathDrafts[draftIndex].tokenId == "") {
+                    sendChat(`${NAME}`, `/w GM Draft "${draft.name}" does not have a tokenId assigned and will now be deleted.`);
+                    state[NAME].storedVariables.pathDrafts.splice(draftIndex, 1);
+                    return;
+                }
+
+                if (state[NAME].storedVariables.pathDrafts[draftIndex].path == undefined || state[NAME].storedVariables.pathDrafts[draftIndex].path == "") {
+                    sendChat(`${NAME}`, `/w GM Draft "${state[NAME].storedVariables.pathDrafts[draftIndex].name}" with Token "${getObj('graphic', state[NAME].storedVariables.pathDrafts[draftIndex].tokenId).get('name')}" has yet to be started.`);
+                    return;
+                } else {
+                    sendChat(`${NAME}`, `/w GM Draft "${state[NAME].storedVariables.pathDrafts[draftIndex].name}" with Token "${getObj('graphic', state[NAME].storedVariables.pathDrafts[draftIndex].tokenId).get('name')}" is on Path "${state[NAME].storedVariables.pathDrafts[draftIndex].path}".`);
+                }
+            } else {
+                sendChat(`${NAME}`, `/w GM Draft "${name}" not found.`);
+                return;
+            }
+        }
+
+        sendChat(`${NAME}`, `/w GM Path Drafts:<br/>${state[NAME].storedVariables.pathDrafts.map(draft => `<br/>${draft.name}<br/>${draft.path}<br/>${draft.step}<br/>${draft.tokenId}`).join("<br/>")}`);
+    }
+
     function getTokensOnPath(name) {
         if (!name) {
             sendChat(`${NAME}`, "/w GM Please specify a name for the path.");
             return;
         }
-
-        log(state[NAME]);
 
         if (!!state[NAME].storedVariables.activeTokenPaths && (state[NAME].storedVariables.activeTokenPaths.length == 0 || state[NAME].storedVariables.activeTokenPaths.filter(token => token.pathName == name).length == 0)) {
             return "None";
@@ -571,6 +866,16 @@ const TokenController = (() => {
             return;
         }
 
+        const pathIndex = state[NAME].storedVariables.paths.findIndex(path => path.name == pathName);
+        if (pathIndex == -1) {
+            sendChat(`${NAME}`, "/w GM Path not found.");
+            return;
+        }
+
+        if (state[NAME].storedVariables.paths[pathIndex].isCycle == undefined) {
+            state[NAME].storedVariables.paths[pathIndex].isCycle = testCycle(state[NAME].storedVariables.paths[pathIndex].path);
+        }
+
         selected.forEach(function (selected) {
             const token = getObj('graphic', selected._id);
             state[NAME].storedVariables.activeTokenPaths.push({
@@ -579,9 +884,11 @@ const TokenController = (() => {
                 step: 0,
                 initialLeft: token.get('left'),
                 initialTop: token.get('top'),
+                isReversing: false,
             });
         });
 
+        createMenu();
         sendChat(`${NAME}`, `/w GM Tokens on Path "${pathName}" have started moving.`);
     }
 
@@ -605,12 +912,18 @@ const TokenController = (() => {
 
                     stoppedReportText += `-- ${getObj('graphic', tokenId).get('name')} | ${state[NAME].storedVariables.activeTokenPaths[index].pathName}<br/>`;
                     state[NAME].storedVariables.activeTokenPaths.splice(index, 1);
+
+                    const memoryIndex = state[NAME].storedVariables.tokenMemory.findIndex(memory => memory.tokenId == tokenId);
+                    if (memoryIndex > -1) {
+                        state[NAME].storedVariables.tokenMemory.splice(memoryIndex, 1);
+                    }
                 }
             } else {
                 state[NAME].storedVariables.activeTokenPaths = [];
                 stoppedReportText = "All Tokens have stopped moving.";
             }
 
+            createMenu();
             sendChat(`${NAME}`, `/w GM ${stoppedReportText}`);
 
             return;
@@ -659,9 +972,15 @@ const TokenController = (() => {
                 });
             } else {
                 state[NAME].storedVariables.tokenMemory[index].isLocked = true;
+                state[NAME].storedVariables.tokenMemory[index].isFollowing = false;
+                state[NAME].storedVariables.tokenMemory[index].followingTokenId = "";
+                state[NAME].storedVariables.tokenMemory[index].left = token.get('left');
+                state[NAME].storedVariables.tokenMemory[index].top = token.get('top');
+                state[NAME].storedVariables.tokenMemory[index].rotation = token.get('rotation');
             }
         });
 
+        createMenu();
         sendChat(`${NAME}`, `/w GM Tokens have been locked.`);
     }
 
@@ -681,40 +1000,52 @@ const TokenController = (() => {
                 return;
             }
 
-            state[NAME].storedVariables.tokenMemory[index].isLocked = false;
+            state[NAME].storedVariables.tokenMemory.splice(index, 1);
         });
 
+        createMenu();
         sendChat(`${NAME}`, `/w GM Tokens have been unlocked.`);
     }
 
-    function followTokens(selected) {
-        if (!selected || selected.length == 0) {
+    function followTokens(followerId, leaderId) {
+        if (!followerId) {
             sendChat(`${NAME}`, "/w GM Please select a follower token.");
             return;
         }
 
-        // Add each selected token to Token Memory
-        selected.forEach(function (selected) {
-            const token = getObj('graphic', selected._id);
-            const index = state[NAME].storedVariables.tokenMemory.findIndex(token => token.tokenId == selected._id);
-            if (index == -1) {
-                state[NAME].storedVariables.tokenMemory.push({
-                    tokenId: selected._id,
-                    pageId: token.get('pageid'),
-                    rotation: token.get('rotation'),
-                    left: token.get('left'),
-                    top: token.get('top'),
-                    followingTokenId: "",
-                    isFollowing: false,
-                    isLocked: false
-                });
-            } else {
-                state[NAME].storedVariables.tokenMemory[index].isFollowing = true;
-            }
+        if (!leaderId) {
+            sendChat(`${NAME}`, "/w GM Please select a leader token the target mechanism.");
+            return;
+        }
 
-            // sendChat as token: !tc following ${selected._id} @{target|_id}
-            sendChat(token.get('name'), `!tc following ${selected._id} @{target|_id}`);
-        });
+        // Add to Token Memory
+        const followerToken = getObj('graphic', followerId);
+        const leaderToken = getObj('graphic', leaderId);
+        const followerIndex = state[NAME].storedVariables.tokenMemory.findIndex(token => token.tokenId == followerId);
+
+        if (followerIndex == -1) {
+            state[NAME].storedVariables.tokenMemory.push({
+                tokenId: followerId,
+                pageId: followerToken.get('pageid'),
+                rotation: followerToken.get('rotation'),
+                left: /* Initial Left Difference of Follower and Leader */ followerToken.get('left') - leaderToken.get('left'),
+                top: /* Initial Top Difference of Follower and Leader */ followerToken.get('top') - leaderToken.get('top'),
+                followingTokenId: leaderId,
+                isFollowing: true,
+                isLocked: false
+            });
+        } else {
+            state[NAME].storedVariables.tokenMemory[followerIndex].followingTokenId = leaderId;
+            state[NAME].storedVariables.tokenMemory[followerIndex].isFollowing = true;
+
+            if (state[NAME].storedVariables.tokenMemory[followerIndex].isLocked) {
+                followerToken.set('status_red', false);
+                state[NAME].storedVariables.tokenMemory[followerIndex].isLocked = false;
+            }
+        }
+
+        createMenu();
+        sendChat(`${NAME}`, `/w GM Token "${followerId}" is now following Token "${leaderId}".`);
     }
 
     function updateTick(interval) {
@@ -748,18 +1079,24 @@ const TokenController = (() => {
         sendChat(`${NAME}`, `/w GM Tick interval set to ${state[NAME].storedVariables.interval} milliseconds.`);
     }
 
-    function resetTokens() {
+    function hideCommands() {
+        state[NAME].storedVariables.hideCommands = !state[NAME].storedVariables.hideCommands;
+        createMenu();
+    }
+
+    function resetTokens(name) {
         if (state[NAME].storedVariables.activeTokenPaths.length == 0) {
             sendChat(`${NAME}`, "/w GM No Tokens are currently on a Path.");
             return;
         }
 
-        state[NAME].storedVariables.activeTokenPaths.forEach(function (token) {
+        state[NAME].storedVariables.activeTokenPaths.filter(atp => atp.pathName == name).forEach(function (token) {
             const tokenObj = getObj('graphic', token.tokenId);
             tokenObj.set('left', token.initialLeft);
             tokenObj.set('top', token.initialTop);
         });
 
+        createMenu();
         sendChat(`${NAME}`, "/w GM All Tokens have been reset.");
     }
 
@@ -804,7 +1141,30 @@ const TokenController = (() => {
             row.append('td', `[${path.name}](!tc List Paths ${path.name})`);
             row.append('td', `[\`\`Start\`\`](!tc Start ${path.name})`);
             row.append('td', `[\`\`Stop\`\`](!tc Stop ${path.name})`);
+            row.append('td', `[\`\`Reset\`\`](!tc Reset ${path.name})`);
+            row.append('td', `[\`\`Remove\`\`](!tc Remove ${path.name})`);
+        }
 
+        if (!!state[NAME].storedVariables.pathDrafts && state[NAME].storedVariables.pathDrafts.length > 0) {
+            content.append('.menuLabel', 'Draft Paths');
+            content.append('.subLabel', 'Select one or more tokens to start a draft path');
+            table = content.append('table');
+
+            for (let i = 0; i < state[NAME].storedVariables.pathDrafts.length; i++) {
+                const path = state[NAME].storedVariables.pathDrafts[i];
+
+                let row = table.append('tr', undefined, { title: path.name });
+                row.append('td', `[${path.name}](!tc List Draft ${path.name})`);
+                row.append('td', `[\`\`U\`\`](!tc draft ${path.name} U ${state[NAME].storedVariables.unitPerClick})`);
+                row.append('td', `[\`\`D\`\`](!tc draft ${path.name} D ${state[NAME].storedVariables.unitPerClick})`);
+                row.append('td', `[\`\`L\`\`](!tc draft ${path.name} L ${state[NAME].storedVariables.unitPerClick})`);
+                row.append('td', `[\`\`R\`\`](!tc draft ${path.name} R ${state[NAME].storedVariables.unitPerClick})`);
+                row.append('td', `[\`\`W\`\`](!tc draft ${path.name} W)`);
+                row.append('td', `[\`\`Set\`\`](!tc draft ${path.name} Set)`);
+                row.append('td', `[\`\`Rmv\`\`](!tc draft ${path.name} Rmv)`);
+            }
+
+            content.append('.menuLabel', `[Units: ${state[NAME].storedVariables.unitPerClick}](!tc unit ?{Units per click |0|1|2|3|4|5|6|7|8|9|10})`);
         }
 
         content.append('.menuLabel', 'Token');
@@ -815,7 +1175,6 @@ const TokenController = (() => {
         row.append('td', `[\`\`Reset\`\`](!tc Reset)`);
         row.append('td', `[\`\`Lock\`\`](!tc Lock)`);
         row.append('td', `[\`\`Unlock\`\`](!tc Unlock)`);
-        row.append('td', `[\`\`Follow\`\`](!tc Follow)`);
 
         content.append('.menuLabel', 'Interval');
         table = content.append('table');
@@ -874,6 +1233,31 @@ const TokenController = (() => {
                 row.append('td', `${tokenPath.step}`);
             }
 
+            // Create a table for Path Drafts
+            table = content.append('table', 'Path Drafts');
+            row = table.append('tr'); // Headers
+            row.append('td', 'Name');
+            row.append('td', 'TokenId');
+            row.append('td', 'Path');
+            row.append('td', 'Step');
+            row.append('td', 'Prev');
+            row.append('td', 'Curr');
+
+            for (let i = 0; i < state[NAME].storedVariables.pathDrafts.length; i++) {
+                const pathDraft = state[NAME].storedVariables.pathDrafts[i];
+                row = table.append('tr');
+                row.append('td', `${pathDraft.name}`);
+                row.append('td', `${pathDraft.tokenId}`);
+                row.append('td', `${pathDraft.path}`);
+                row.append('td', `${pathDraft.step}`);
+                if (pathDraft.prevStep) {
+                    row.append('td', `${pathDraft.previousStep.direction + pathDraft.previousStep.distance}`);
+                }
+                if (pathDraft.currentStep) {
+                    row.append('td', `${pathDraft.currentStep.direction + pathDraft.currentStep.distance}`);
+                }
+            }
+
             listingVars = false;
         }
 
@@ -918,11 +1302,6 @@ const TokenController = (() => {
                 'margin-bottom': '10px'
             }
         }));
-    }
-
-    function hideCommands() {
-        state[NAME].storedVariables.hideCommands = !state[NAME].storedVariables.hideCommands;
-        createMenu();
     }
 
     return {};
