@@ -42,12 +42,20 @@ const TokenController = (() => {
             state[NAME] = {
                 module: NAME,
                 schemaVersion: VERSION,
-                resets: 0,
+                iteration: 0,
+                storedVariables: undefined
             };
         }
 
-        if (state[NAME].resets == undefined) {
-            state[NAME].resets = 0;
+        if (state[NAME].iteration === undefined) {
+            state[NAME].iteration = 0;
+        } else {
+            state[NAME].iteration++;
+        }
+
+        if (state[NAME].module != NAME) {
+            state[NAME].iteration = 0;
+            state[NAME].module = NAME;
         }
 
         if (state[NAME].schemaVersion != VERSION) {
@@ -642,7 +650,7 @@ const TokenController = (() => {
                     "margin-bottom": "10px",
                 }
             }),
-        })
+        });
     }
 
     function showUsage() {
